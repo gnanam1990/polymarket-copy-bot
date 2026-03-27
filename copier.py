@@ -7,6 +7,7 @@ import hashlib
 import time
 import logging
 import os
+import threading
 from typing import Dict
 
 import aiohttp
@@ -24,6 +25,7 @@ class Copier:
         self.config = config
         self.pos = positions
         self._balance = config["mode"].get("paper_balance", 1000.0)
+        self._balance_lock = threading.RLock()
         self._paused = False
         self._events: list = []  # feed for dashboard
         self._market_dedup: Dict[str, float] = {}  # market+side → last copy time
@@ -33,13 +35,15 @@ class Copier:
         # Load balance from existing positions
         if os.path.exists("data/balance.txt"):
             try:
-                self._balance = float(open("data/balance.txt").read().strip())
-            except:
-                pass
+                with open("data/balance.txt", "r") as f:
+                    self._balance = float(f.read().strip())
+            except (IOError, ValueError) as e:
+                log.warning(f"Failed to load balance: {e}")
 
     @property
     def balance(self):
-        return self._balance
+        with self._balance_lock:
+            return self._balance
 
     @property
     def is_paper(self):
@@ -141,12 +145,13 @@ class Copier:
         gas = random.uniform(0.05, 0.20)
         cost = size + gas
 
-        if cost > self._balance:
-            self._log_event("SKIP", f"Insufficient balance: ${self._balance:.2f}")
-            return
+        with self._balance_lock:
+            if cost > self._balance:
+                self._log_event("SKIP", f"Insufficient balance: ${self._balance:.2f}")
+                return
 
-        self._balance -= cost
-        self._save_balance()
+            self._balance -= cost
+            self._save_balance()
 
         self.pos.open(
             wallet=event.wallet,
@@ -187,21 +192,28 @@ class Copier:
             while self._running:
                 await asyncio.sleep(30)
                 positions = self.pos.get_open()
+                settled_this_cycle = set()
                 for p in positions:
+                    if p["id"] in settled_this_cycle:
+                        continue
                     try:
                         result = await self._check_resolution(session, p)
                         if result == "win":
                             settled = self.pos.settle(p["id"], True)
                             if settled:
+                                settled_this_cycle.add(p["id"])
                                 payout = settled["size"] / settled["entry_price"] if settled["entry_price"] > 0 else settled["size"]
-                                self._balance += payout
-                                self._realized_today += settled["pnl"]
-                                self._save_balance()
+                                with self._balance_lock:
+                                    self._balance += payout
+                                    self._realized_today += settled["pnl"]
+                                    self._save_balance()
                                 self._log_event("WIN", f"✅ {p['side']} {p['title'][:25]} +${settled['pnl']:.2f} bal=${self._balance:.2f}")
                         elif result == "loss":
                             settled = self.pos.settle(p["id"], False)
                             if settled:
-                                self._realized_today += settled["pnl"]
+                                settled_this_cycle.add(p["id"])
+                                with self._balance_lock:
+                                    self._realized_today += settled["pnl"]
                                 self._log_event("LOSS", f"❌ {p['side']} {p['title'][:25]} -${abs(settled['pnl']):.2f} bal=${self._balance:.2f}")
                     except Exception as e:
                         log.debug(f"Settlement check: {e}")
@@ -230,7 +242,7 @@ class Copier:
                     return "win" if outcome == our_side else "loss"
 
             return "open"
-        except:
+        except Exception:
             return "open"
 
     @property

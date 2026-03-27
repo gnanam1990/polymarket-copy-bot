@@ -5,6 +5,7 @@ import threading
 import logging
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -36,12 +37,23 @@ class Positions:
             log.warning(f"Load positions: {e}")
 
     def _save(self):
-        """Save positions to disk."""
+        """Save positions to disk atomically (write temp → rename)."""
         try:
-            os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+            data_dir = os.path.dirname(DATA_FILE)
+            os.makedirs(data_dir, exist_ok=True)
             all_pos = list(self._positions.values())
-            with open(DATA_FILE, "w") as f:
-                json.dump({"positions": all_pos, "trades": self._trades[-1000:]}, f, indent=2)
+            payload = {"positions": all_pos, "trades": self._trades[-1000:]}
+            fd, temp_path = tempfile.mkstemp(dir=data_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(payload, f, indent=2)
+                os.replace(temp_path, DATA_FILE)
+            except Exception:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             log.warning(f"Save positions: {e}")
 

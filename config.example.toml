@@ -27,3 +27,5 @@ trades_per_wallet = 20          # Number of recent trades to check
 [dashboard]
 enabled = true
 port = 8080
+# Set BOT_API_TOKEN env var to require auth on all API endpoints
+# Example: export BOT_API_TOKEN="my-secret-token"

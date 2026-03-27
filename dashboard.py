@@ -97,9 +97,13 @@ input:focus{border-color:var(--green)}
 <div class="toast" id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);let paused=false;
+const API_TOKEN='__API_TOKEN__';
+const authHdr=API_TOKEN?{'Authorization':'Bearer '+API_TOKEN}:{};
+function authFetch(url,opts={}){opts.headers={...opts.headers,...authHdr};return fetch(url,opts)}
 
 // SSE
-const sse=new EventSource('/api/feed');
+const sseUrl=API_TOKEN?'/api/feed?token='+encodeURIComponent(API_TOKEN):'/api/feed';
+const sse=new EventSource(sseUrl);
 sse.onmessage=e=>{try{update(JSON.parse(e.data))}catch(e){}};
 
 function update(d){
@@ -125,14 +129,14 @@ function update(d){
     const bid=p.bid>0?(p.bid*100).toFixed(1)+'¢':'—';
     const ask=p.ask>0?(p.ask*100).toFixed(1)+'¢':'—';
     const pc=p.pnl>=0?'g':'r';
-    h+=`<tr><td>${(p.title||p.market_id).substring(0,25)}</td><td class="${sc}">${p.side}</td><td>$${p.size.toFixed(2)}</td><td>${(p.entry_price*100).toFixed(1)}¢</td><td>${bid}</td><td>${ask}</td><td class="${pc}" style="font-weight:700">${p.pnl>=0?'+':''}$${p.pnl.toFixed(2)}</td></tr>`;
+    h+=`<tr><td>${esc((p.title||p.market_id).substring(0,25))}</td><td class="${sc}">${esc(p.side)}</td><td>$${p.size.toFixed(2)}</td><td>${(p.entry_price*100).toFixed(1)}¢</td><td>${bid}</td><td>${ask}</td><td class="${pc}" style="font-weight:700">${p.pnl>=0?'+':''}$${p.pnl.toFixed(2)}</td></tr>`;
   });
   $('posBody').innerHTML=h+'</table>';
 
   // Feed
   if(d.events&&d.events.length){
     const cur=$('feedBody').innerHTML;
-    let n='';d.events.forEach(e=>{n+=`<div class="feed-item" data-t="${e.type}"><span class="time">${e.time}</span><span class="type">${e.type}</span>${e.message}</div>`});
+    let n='';d.events.forEach(e=>{n+=`<div class="feed-item" data-t="${esc(e.type)}"><span class="time">${esc(e.time)}</span><span class="type">${esc(e.type)}</span>${esc(e.message)}</div>`});
     $('feedBody').innerHTML=n+cur;
     const items=$('feedBody').children;if(items.length>200)for(let i=200;i<items.length;i++)items[i].remove();
   }
@@ -140,27 +144,28 @@ function update(d){
 
 // Wallets
 async function loadWallets(){
-  const r=await fetch('/api/wallets');const d=await r.json();
+  const r=await authFetch('/api/wallets');const d=await r.json();
   $('wCount').textContent=Object.keys(d.wallets).length;
   const entries=Object.entries(d.wallets);
   if(!entries.length){$('walletBody').innerHTML='<div class="empty">No wallets — add one above</div>';return}
-  $('walletBody').innerHTML=entries.map(([addr,info])=>`<div class="wallet-item"><span class="name">${info.name||addr.substring(0,14)}</span><span class="addr" onclick="navigator.clipboard.writeText('${addr}')">${addr.substring(0,8)}…${addr.substring(38)}</span><span class="rm" onclick="removeWallet('${addr}')">✕</span></div>`).join('');
+  $('walletBody').innerHTML=entries.map(([addr,info])=>`<div class="wallet-item"><span class="name">${esc(info.name||addr.substring(0,14))}</span><span class="addr" onclick="navigator.clipboard.writeText('${esc(addr)}')">${esc(addr.substring(0,8))}…${esc(addr.substring(38))}</span><span class="rm" onclick="removeWallet('${esc(addr)}')">✕</span></div>`).join('');
 }
 async function addWallet(){
   const v=$('addInput').value.trim();if(!v)return;$('addInput').value='';
   toast('Resolving...');
-  const r=await fetch('/api/wallet/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:v})});
+  const r=await authFetch('/api/wallet/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:v})});
   const d=await r.json();
   toast(d.ok?'✅ Added: '+(d.username||d.wallet.substring(0,14)):'❌ '+d.error);
   loadWallets();
 }
 async function removeWallet(addr){
-  await fetch('/api/wallet/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet:addr})});
+  await authFetch('/api/wallet/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet:addr})});
   toast('Removed');loadWallets();
 }
 async function togglePause(){
-  await fetch(paused?'/api/resume':'/api/pause',{method:'POST'});
+  await authFetch(paused?'/api/resume':'/api/pause',{method:'POST'});
 }
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000)}
 
 loadWallets();setInterval(loadWallets,30000);
@@ -176,9 +181,24 @@ def create_app(tracker, copier, positions):
     app = Flask(__name__)
     CORS(app)
 
+    # Token auth — set BOT_API_TOKEN env var to protect dashboard
+    _api_token = os.getenv("BOT_API_TOKEN", "").strip()
+
+    @app.before_request
+    def _check_auth():
+        if not _api_token:
+            return  # no token set = open access (local dev)
+        if request.path == "/" or request.path.startswith("/static"):
+            return  # UI served without token; JS sends token in headers
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if request.args.get("token"):
+            token = request.args["token"]  # allow ?token= for SSE
+        if token != _api_token:
+            return jsonify({"error": "Unauthorized"}), 401
+
     @app.route("/")
     def index():
-        return HTML
+        return HTML.replace("__API_TOKEN__", _api_token)
 
     @app.route("/api/status")
     def api_status():
