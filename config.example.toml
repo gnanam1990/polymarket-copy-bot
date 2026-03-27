@@ -1,0 +1,29 @@
+# Polymarket Copy Trading Bot — Configuration
+# Rename to config.toml and edit values
+
+[mode]
+paper = true                    # true = simulation, false = real USDC
+paper_balance = 1000.0          # Starting paper balance
+
+[copy]
+min_profit_pct = 30.0           # Min ROI% per win to copy (30 = max entry ~77¢)
+max_entry_price = 0.70          # Max entry price (decimal, 0.70 = 70¢)
+min_entry_price = 0.03          # Min entry (skip dust trades below 3¢)
+position_size = 10.0            # USDC per trade
+max_positions = 20              # Max concurrent open positions
+dedup_window_secs = 60          # Block same market+side within N seconds
+
+[wallets]
+track = [
+    # Add wallet addresses here:
+    # "0xed107a85a4585a381e48c7f7ca4144909e7dd2e5",
+    # "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+]
+
+[poll]
+interval_secs = 2               # How often to poll activity API
+trades_per_wallet = 20          # Number of recent trades to check
+
+[dashboard]
+enabled = true
+port = 8080
